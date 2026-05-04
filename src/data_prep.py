@@ -29,7 +29,7 @@ IMU_COL_NAMES = [
     'acc_x', 'acc_y', 'acc_z',
     'gyro_x', 'gyro_y', 'gyro_z',
     'mag_x', 'mag_y', 'mag_z',
-    'quat_w', 'quat_x', 'quat_y', 'quat_z'
+    
 ]
 
 # ─────────────────────────────────────────
@@ -57,6 +57,8 @@ def load_maryam_subject(imu_subj_path, moment_subj_path, prefix='LLEG-000'):
         return None, None
 
     # Stack all sensors horizontally
+    min_len = min(arr.shape[0] for arr in imu_data)
+    imu_data = [arr[:min_len] for arr in imu_data]
     imu_array = np.hstack(imu_data)  # (N, n_sensors * 13)
 
     # Load joint moments
@@ -154,38 +156,43 @@ def create_windows(imu_array, moments_array, window_size=WINDOW_SIZE,
 # ─────────────────────────────────────────
 def encode_window_as_image(window, image_size=IMAGE_SIZE):
     """
-    Encode a (window_size x n_features) window as an RGB image.
-    Following Liew 2021: map time→height, features→width, use 3 channels.
-    Returns: (image_size, image_size, 3) float32 array
+    Encode IMU window as RGB image following Liew 2021:
+    - Height = time steps (100)
+    - Width  = sensors x axes (7 sensors x 3 = 21)
+    - R = X axes, G = Y axes, B = Z axes
+    window shape: (100, 63)  — 7 sensors x 9 channels each
     """
     from scipy.ndimage import zoom
 
-    # Normalize window to [0, 1]
+    # Normalize to [0, 1]
     w_min = window.min(axis=0, keepdims=True)
     w_max = window.max(axis=0, keepdims=True)
     w_range = np.where((w_max - w_min) == 0, 1, w_max - w_min)
-    normalized = (window - w_min) / w_range  # (window_size, n_features)
+    normalized = (window - w_min) / w_range  # (100, 63)
 
-    # Split features into 3 channels (R, G, B)
-    n_feat = normalized.shape[1]
-    chunk = n_feat // 3
-    R = normalized[:, :chunk]
-    G = normalized[:, chunk:2*chunk]
-    B = normalized[:, 2*chunk:]
+    n_sensors = 7
+    n_axes = 3  # acc, gyro, mag each have x,y,z
 
-    # Pad B if needed
-    if B.shape[1] < chunk:
-        B = np.pad(B, ((0, 0), (0, chunk - B.shape[1])))
+    # Reshape to (100, 7_sensors, 9_channels)
+    reshaped = normalized.reshape(window.shape[0], n_sensors, 9)
 
-    # Stack and resize to image_size x image_size
-    img = np.stack([R, G, B], axis=-1)  # (window_size, chunk, 3)
+    # Extract X, Y, Z axes across all sensors and all measurement types
+    # acc_x=0, gyro_x=3, mag_x=6 → X axis indices
+    # acc_y=1, gyro_y=4, mag_y=7 → Y axis indices
+    # acc_z=2, gyro_z=5, mag_z=8 → Z axis indices
+    R = reshaped[:, :, [0, 3, 6]].reshape(window.shape[0], -1)  # (100, 21)
+    G = reshaped[:, :, [1, 4, 7]].reshape(window.shape[0], -1)  # (100, 21)
+    B = reshaped[:, :, [2, 5, 8]].reshape(window.shape[0], -1)  # (100, 21)
 
-    # Zoom to target size
+    # Stack into image (100, 21, 3)
+    img = np.stack([R, G, B], axis=-1)
+
+    # Resize to 150x150
     zoom_h = image_size / img.shape[0]
     zoom_w = image_size / img.shape[1]
     img_resized = zoom(img, (zoom_h, zoom_w, 1), order=1)
 
-    return img_resized.astype(np.float32)
+    return img_resized.astype(np.float32) 
 
 
 def encode_dataset_as_images(X):
